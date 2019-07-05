@@ -1,0 +1,869 @@
+---
+title: "Regulatory Elements in Neurodegenerative Diseases: Overlap with Human GWAS Risk Loci"
+author: "Felix L Struebing"
+date: "2/26/2018"
+output: 
+  html_document:
+    keep_md: true
+    toc: true
+    toc_depth: 3
+    toc_float:
+     collapsed: false
+     smooth_scroll: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F, warning = F, fig.path = 'figures')
+```
+
+Setting libraries:
+```{r}
+options(stringsAsFactors = F)
+library(tidyverse)
+library(DT)
+library(rtracklayer)
+library(annotables)
+library(GenomicRanges)
+library(tidygenomics)
+library(Biostrings)
+library(GenomicFeatures)
+library(mogene20sttranscriptcluster.db)
+library(BSgenome.Mmusculus.UCSC.mm10)
+```
+
+
+# Introduction
+
+Regulatory Elements (REs), also called cis-REs, are DNA sequences to which a regulatory molecule (e.g. a transcription Factor or a microRNA) can bind. In order for binding to take place, chromatin must be in an open configuration (PMID 26661887, PMC5642610). We can leverage this fact to predict REs that have a known association with disease or gene transcription in regard to cell type-specific biological function.  
+For the identification of REs that are functionally associated with AD, we use publically accessible high-throughput open chromatin assays from various sources:
+
+1. Neuronal subtypes  
+[Epigenomic Signatures of Neuronal Diversity in the Mammalian Brain](https://www.ncbi.nlm.nih.gov/pubmed/26087164), PMID 26087164  
+Details: ATAC-Seq of different subtypes of **neurons** in C57BL/6-129SV mice. Cell types used: Parvalbumin (fast spiking interneurons), VIP-expressing interneurons, and excitatory pyramidal neurons (Camk2a), all isolated from Neocortex.  We chose **PV neurons** and **excitatory neurons** only, as these are the cre-drivers we have here. We downloaded bigwig files (sub100nt filtered versions).  
+GEO: <https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE63137>  
+GEO format and alignment: bigwig files (bed peaks are too large), mm10
+
+2. Astrocytes  
+[Core pathway mutations induce de-differentiation of murine astrocytes into glioblastoma stem cells that are sensitive to radiation but resistant to temozolomide](https://www.ncbi.nlm.nih.gov/pubmed/26826202), PMID 26826202  
+Details: FAIRE-Seq from isolated C57BL/6 **astrocytes**.  
+GEO: <https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE73262>  
+GEO format and alignment: bigwig of raw FAIRE signal, mm9
+
+3. Microglia  
+[An environment-dependent transcriptional network specifies human microglia identity](https://www.ncbi.nlm.nih.gov/pubmed/28546318), PMID 28546318  
+Details:  C57BL/6 whole brain lysates with FACS-isolated **microglia**, and compared an in vivo with an ex vivo condition.
+GEO: <https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE89960>  
+GEO format and alignment: bed file, mm10  
+
+4. ENCODE files / bulk tissue  
+These are preprocessed peak (*.bed) files from the ENCODE project, mapped to mm10.  
+Source; C57BL/6 **cerebellum adult**, downloaded fold-change over control *.bigwig for 2 biological replicates: <https://www.encodeproject.org/experiments/ENCSR554JQP/>  
+Source; C57BL/6 **frontal cortex adult**, downloaded fold-change over control *.bigwig for 2 biological replicates:
+<https://www.encodeproject.org/experiments/ENCSR889WQX/>
+
+5. Dentate Gyrus  
+[Neuronal activity modifies the chromatin accessibility landscape in the adult brain.](https://www.ncbi.nlm.nih.gov/pubmed/28166220), PMID 28166220  
+Details: This article analyzed open chromatin regions in the microdissected DG of 8 week-old C57BL/6 mice via ATAC-Seq at different timepoints either before (E0) or X hours after synchronous neuronal activation (EX). Data are available as precalled GEO datasets or as raw data in the SRA. The authors claim that their microdisscetion approach yields 90% **granular cells**. We could use this data to define chromatin footprints of unstimulated and stimulated hippocampal neurons.  
+GEO: [E0, E1, E4](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE82010), [E24](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE86367)  
+GEO format and alignment: bed file, mm9 (MACS)
+
+***
+
+# Analysis
+
+## Import public open chromatin data
+
+### 1. PV interneurons + Camk2a neurons
+
+The precalled peaks were somewhat too wide - we downloaded bigwig files, converted to bedGraph, then called peaks on those using MACS2 and the following parameters (the cutoff was verified to be just above background by visual inspection of bigwig files): cutoff -c 3, min length -l 100
+
+
+```{r}
+# files = list.files('data/GSE63137_neuron_subtypes_ATAC/', full.names = T)
+# neurons = map(files, import.bed)
+# neurons[[2]]@elementMetadata$origin = 'PV_neurons'
+# neurons[[2]]@elementMetadata$itemRgb = 'darkorange3'
+# neurons[[1]]@elementMetadata$origin = 'Camk2a_neurons'
+# neurons[[1]]@elementMetadata$itemRgb = 'goldenrod1'
+# neurons = c(neurons[[1]], neurons[[2]])
+files = list.files('data/GSE63137_neuron_subtypes_ATAC/recalled', pattern = '.bed', full.names = T)
+files.gr = map(files, read_delim, delim = '\t', skip = 1, col_names = c('seqnames', 'start', 'end', 'peak', 'score', 'A', 'B', 'C', 'D', 'E'))
+files.gr = map(files.gr, makeGRangesFromDataFrame)
+PV_neurons = Reduce(intersect, list(files.gr[[3]], files.gr[[4]]))
+PV_neurons@elementMetadata$origin = 'PV_neurons'
+PV_neurons@elementMetadata$itemRgb = 'darkorange3'
+Camk2a_neurons = Reduce(intersect, list(files.gr[[1]], files.gr[[2]]))
+Camk2a_neurons@elementMetadata$origin = 'Camk2a_neurons'
+Camk2a_neurons@elementMetadata$itemRgb = 'goldenrod1'
+neurons = c(PV_neurons, Camk2a_neurons)
+length(neurons)
+```
+
+
+### 2. Astrocytes
+
+Files were only available as bigwig genome graphs. In order to call peaks, we need to convert the bigwigs into bedgraphs first and then run MACS2 on them. The following commands were used for this purpose:
+
+--> convert bw to bedg: `felice@MacBook-Pro:~/Desktop/AD_loci_for_cloning/bin$ ./bigWigToBedGraph ../data/GSE73262_astrocytes_FAIRE/GSM1889812_AC1-FAIRE.bw AC1_FAIRE.bedGraph`
+
+<!-- Signal looks like this: ![](pics/Screen Shot 2018-02-27 at 14.11.43.png) -->
+
+--> call peaks using MACS2: `macs2 bdgpeakcall -i AC1_FAIRE.bedGraph -l 100 -c 8 -o AC1_peaks.bed`
+
+<!-- This seemed to result in a good SNR: ![](pics/after_calling.png) -->
+
+Import and lift over to mm10:
+```{r}
+files = list.files('data/GSE73262_astrocytes_FAIRE/', pattern = 'bed$', full.names = T)
+files.gr = map(files, read_delim, delim = '\t', skip = 1, col_names = c('seqnames', 'start', 'end', 'peak', 'score', 'A', 'B', 'C', 'D', 'E'))
+files.gr = map(files.gr, makeGRangesFromDataFrame)
+chain = import.chain('data/mm9ToMm10.over.chain')
+astrocytes = Reduce(intersect, files.gr) %>% 
+  liftOver(., chain)
+astrocytes = unlist(astrocytes)
+astrocytes@elementMetadata$origin = 'astrocytes'
+astrocytes@elementMetadata$itemRgb = 'dodgerblue2'
+length(astrocytes)
+```
+
+### 3. Microglia
+```{r}
+files = list.files('data/GSE89960_microglia_ATAC/', full.names = T)
+microglia = map(files, import.bed)
+names(microglia) = c('microglia_exvivo', 'microglia_invitro')
+microglia[[1]]@elementMetadata$origin = 'microglia_exvivo'
+microglia[[1]]@elementMetadata$itemRgb = 'chartreuse1'
+microglia[[2]]@elementMetadata$origin = 'microglia_invitro'
+microglia[[2]]@elementMetadata$itemRgb = 'chartreuse3'
+microglia = c(microglia[[1]], microglia[[2]])
+mcols(microglia) = DataFrame(mcols(microglia)[3], mcols(microglia)[4])
+rm(files, files.gr)
+length(microglia)
+```
+
+### 4. ENCODE 
+
+For the adult C57BL/6 ATAC-seq files, bigwigs (fold changes over control) were downloaded for both replicates and converted to bedGraph. Peaks were called with MACS2 on these bedGraph files with a cutoff so that there were approx. 50k peaks in each replicate. 
+
+Merge and reduce replicates:
+
+#### CEREBELLUM
+```{r}
+cerebellum = map(list.files('data/ENCODE_mm10_cerebellum_ATAC/', pattern = '.bed', full.names = T, recursive = F), read_delim, delim = '\t', col_names = F, skip = 1) %>% map(., makeGRangesFromDataFrame, seqnames.field = 'X1', start.field = 'X2', end.field = 'X3') %>% Reduce(intersect, .)
+cerebellum@elementMetadata$origin = 'cerebellum'
+cerebellum@elementMetadata$itemRgb = 'magenta3'
+length(cerebellum)
+```
+
+#### FRONTAL CORTEX
+```{r}
+frontalCortex = map(list.files('data/ENCODE_mm10_frontalCortex_ATAC/', pattern = '.bed', full.names = T, recursive = F), read_delim, delim = '\t', col_names = F, skip = 1) %>% map(., makeGRangesFromDataFrame, seqnames.field = 'X1', start.field = 'X2', end.field = 'X3') %>% Reduce(intersect, .)
+frontalCortex@elementMetadata$origin = 'frontalCortex'
+frontalCortex@elementMetadata$itemRgb = 'firebrick1'
+length(frontalCortex)
+```
+
+### 5. Dentate Gyrus
+```{r}
+files = list.files('data/GSE82010_DG_neurons_ATAC/', full.names = T)
+files.gr = map(files, import.bed)
+names(files.gr) = str_sub(files, start = 32, end = -8)
+# merge replicates
+E0 = Reduce(intersect, files.gr[1:4])
+#export.bed(E0, 'E0.bed')
+E1 = Reduce(intersect, files.gr[5:8])
+#export.bed(E1, 'E1.bed')
+E4 = Reduce(intersect, files.gr[9:12])
+#export.bed(E4, 'E4.bed')
+common = Reduce(intersect, list(E0, E1, E4)) # merges REs that are active in all conditions
+common@elementMetadata$condition = 'common_REs'
+#export.bed(common, 'common.bed')
+stim = c(E1, E4)
+stim_specific = stim[!stim %over% common]
+stim_specific@elementMetadata$condition = 'stim_specific_REs'
+#export.bed(stim_specific, 'stim_specific.bed')
+unstim_specific = E0[!E0 %over% stim_specific]
+unstim_specific = unstim_specific[!unstim_specific %over% common]
+unstim_specific@elementMetadata$condition = 'unstim_specific_REs'
+#export.bed(unstim_specific, 'unstim_specific.bed')
+
+# store the results 
+granularDG = c(common, stim_specific, unstim_specific)
+granularDG@elementMetadata$origin = paste0('granularDG', '_', granularDG@elementMetadata$condition)
+mcols(granularDG) = granularDG@elementMetadata$origin
+granularDG@elementMetadata$itemRgb = 'darkorchid3'
+#export.bed(granularDG, 'granularDG.bed')
+rm(E0, E1, E4, common, stim, stim_specific, unstim_specific)
+# lift everything over to mm10
+dentateGyrus = liftOver(granularDG, chain)
+dentateGyrus = unlist(dentateGyrus)
+names(mcols(dentateGyrus)) = c('origin', 'itemRgb')
+rm(granularDG)
+length(dentateGyrus)
+```
+
+
+## Annotating REs with closest gene
+
+Define a function for this:
+```{r}
+annotateREs = function(x) {
+  mouseGenes = (annotables::grcm38) %>% dplyr::select(symbol, chr, start, end, biotype) %>% makeGRangesFromDataFrame(., keep.extra.columns = T)
+  seqlevelsStyle(mouseGenes) = 'UCSC'
+  closeGenes = nearest(x, unstrand(mouseGenes))
+  closeGenes[is.na(closeGenes)] = 53728
+  x@elementMetadata$closestGene = mouseGenes[closeGenes]@elementMetadata$symbol
+  distanceGenes = distance(x, mouseGenes[closeGenes])
+  x@elementMetadata$distanceToClosest = distanceGenes
+  x@elementMetadata$closestGene[is.na(mcols(x)$distanceToClosest)] = 'none_found'
+  x
+}
+```
+
+## Combining REs
+```{r message = F, warning = F}
+regelements = GRangesList('astrocytes' = astrocytes, 'pvNeurons' = PV_neurons, 'camk2aNeurons' = Camk2a_neurons,  'microglia' = microglia, 'frontalCortex' = frontalCortex, 'cerebellum' = cerebellum, 'dentateGyrus' = dentateGyrus)
+regelements = endoapply(regelements, annotateREs)
+names(regelements)
+#save(regelements, file = 'combined_REs_mm10.Rdata')
+```
+
+Is the distance to the closes gene roughly the same for each RE?
+```{r}
+lapply(regelements, function(x) {summary(x@elementMetadata$distanceToClosest)})
+```
+
+What is the top closest gene?
+```{r}
+lapply(regelements, function(x) {x@elementMetadata %>% as.data.frame() %>% group_by(closestGene) %>% summarize(n = n(), mean_distance = mean(distanceToClosest, na.rm = T)) %>% arrange(-n)})
+```
+
+
+What is the width distribution of REs in each cell type?
+```{r eval = F, echo = F}
+unlist(regelements) %>% 
+  as.data.frame(row.names = NULL) %>% 
+  ggplot(aes(x = width)) +
+  geom_histogram(binwidth = 25) +
+  facet_wrap(~origin, scales = 'free') +
+  labs(title = 'Mean RE width before winsorizing')
+```
+
+Some outliers lead to a left skew of some distributions - possibly due to lifting over to another genome assembly, as the extreme values are all in buggy regions of mm9. Winsorizing will be helpful. 
+```{r}
+regelements = endoapply(regelements, function(x) {x[width(x) <= 2000]})
+```
+
+## RE width analysis
+How many REs did this approach yield per cell type?
+```{r}
+sapply(regelements, length) %>% as.data.frame() %>% add_rownames(., 'tissue') %>% 
+  ggplot(aes(x = reorder(tissue, -`.`), y = `.`, fill = tissue)) +
+  geom_col(color = 'black') +
+  labs(x = 'cell/tissue type', y = 'cumulative number of REs', title = 'Cumulative number of REs') +
+  scale_fill_discrete(guide = F)
+```
+
+What is the width of all REs per cell type, as a sum?
+```{r}
+sum(width(regelements)) %>% as.data.frame() %>% add_rownames(., 'tissue') %>% 
+  ggplot(aes(x = reorder(tissue, -`.`), y = `.`/1000000, fill = tissue)) +
+  geom_col(color = 'black') +
+  labs(x = 'cell/tissue type', y = 'length', title = 'Cumulative length of REs') +
+  scale_fill_discrete(guide = F) +
+  scale_y_continuous(label = scales::unit_format(unit = 'mb'))
+```
+
+Repeat distribution plot.
+```{r eval = T}
+unlist(regelements) %>% 
+  as.data.frame(row.names = NULL) %>% 
+  ggplot(aes(x = width, fill = origin)) +
+  geom_histogram(binwidth = 25) +
+  facet_wrap(~origin, scales = 'free') + 
+  scale_fill_discrete(guide = F) +
+  labs(title = 'Average width per RE in bp')
+```
+
+Better one:
+```{r}
+regelements %>% as.data.frame() %>% 
+  #dplyr::filter(group_name != 'microglia' & width > 201) %>% 
+  ggplot(aes(x = width, fill = group_name)) +
+  geom_density()+
+  facet_wrap(~group_name, scales = 'free_y') +
+  xlim(0, 1000) +
+  scale_fill_discrete(guide = F) +
+  labs(x = 'RE width [bp]', y = 'Kernel density') +
+  theme_grey(base_size = 14)
+```
+
+
+### Common REs in all cell types
+```{r}
+strand(regelements) = '*'
+commonreg = Reduce(intersect, regelements)
+commonreg@elementMetadata$origin = 'common_REs'
+commonreg@elementMetadata$itemRgb = 'honeydew4'
+```
+```{r}
+qplot(x = width(commonreg)) + labs(x = 'Width [bp]', title = 'Width distribution of common REs')
+```
+
+### Export results
+```{r}
+bed = unlist(regelements)
+bed.exp = bed
+mcols(bed.exp) = DataFrame(
+  name = mcols(bed.exp)$origin,
+  score = 100,
+  itemRgb = mcols(bed.exp)$itemRgb
+)
+bed.exp.concat = bed.exp %>% 
+  as.tibble(.) %>% 
+  dplyr::mutate(name = case_when(
+    grepl('granular', name) ~ 'Dentate_gyrus',
+    grepl('microglia', name) ~ 'Microglia',
+    grepl('astro', name) ~ 'Astrocytes',
+    TRUE ~ name
+  )) %>% 
+  dplyr::filter(!grepl(c('frontal|cerebell'), name)) %>% 
+  makeGRangesFromDataFrame(., keep.extra.columns = T)
+mcols(bed.exp.concat)$itemRgb[mcols(bed.exp.concat)$name == 'Dentate_gyrus'] = 'darkorchid3'
+#bed.exp.concat %>% group_by(origin) %>% tally() #Sanity check
+export.bed(bed.exp, 'export/regelements_colored_by_celltype.bed')
+export.bed(bed.exp.concat, 'export/regelements_colored_by_celltype_concatenated.bed')
+```
+
+## Human GWAS overlay
+
+After concatenation, we could overlay RE peaks with neuropathology-relevant GWAS loci for better candidate selection. We can get these from the GWAS catalog (NHGRI-EBI). Downloaded all associations for the terms **Amyloid**, **Alzheimer**, **Dementia**, **Neurodegeneration**, **Parkinson** and **Tau** on Mar 2nd, 2018. 
+
+### Importing GWAS loci
+
+Import the GWAS catalog file.
+```{r}
+files = list.files('data/GWAS_associations/', pattern = '.txt', full.names = T)
+gwas_raw = map(files, read_delim, delim = '\t') %>% 
+  do.call(rbind, .) %>% 
+  unique()
+#dplyr::filter(grepl('Schizo', `DISEASE/TRAIT`))
+dim(gwas_raw)
+```
+
+Some stats for the GWAS associations.
+```{r}
+gwas_raw %>% group_by(`DISEASE/TRAIT`) %>% tally() %>% arrange(-n) %>% DT::datatable(.)
+gwas_raw %>%
+  group_by(CONTEXT) %>% 
+  tally() %>% 
+  arrange(-n) %>% 
+  DT::datatable(.)
+```
+
+Context stats for publication / presentation:
+```{r}
+top_context = gwas_raw %>% 
+  group_by(CONTEXT) %>% 
+  tally() %>% 
+  filter(n >=9) %>% 
+  pull(CONTEXT) 
+
+library(scales)
+library(RColorBrewer)
+mypal = colorRampPalette(brewer.pal(n = 4, name = "Purples"), bias = 1.5, interpolate = 'spline')
+mypal2 = colorRampPalette(brewer.pal(n = 9, name = "Greens"), bias = 1.5, interpolate = 'spline')
+
+temp = gwas_raw %>% 
+  mutate(context_new = case_when(
+    CONTEXT %in% top_context ~ CONTEXT,
+    TRUE ~ 'other'
+  )) %>% 
+  group_by(context_new) %>%
+  tally() %>% 
+  dplyr::filter(!is.na(context_new)) %>% 
+  mutate(grp = case_when(
+    context_new %in% c('missense_variant', 'synonymous_variant', 'other') ~ 'coding',
+    TRUE ~ 'non-coding'
+  ))
+
+temp %>% 
+  ggplot(aes(x = '', y = n, fill = interaction(as.factor(context_new), as.factor(grp)))) +
+  geom_col(width = 1) +
+  scale_fill_manual(values = c(mypal(4)[-1], mypal2(10)[-1]),
+                    #labels = temp$context_new,
+                    guide = guide_legend(title = 'Variant context')) +
+  scale_y_continuous(breaks = c(), labels = c()) +
+  coord_polar('y') +
+  labs(title = 'Number of coding vs. non-coding variants', y = '', x = '') +
+  theme_minimal(base_size = 14) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.border = element_blank(),
+        panel.grid = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_rect(fill = 'transparent')
+  ) + 
+  ggsave(filename = 'pie_plot_context_noncoding.png', width = 8, height = 8, bg = 'transparent')
+
+
+temp %>% 
+  #dplyr::filter(-context_new) %>% 
+  ggplot(aes(x = '', y = n, fill = grp)) +
+  geom_col(width = 1, color = 'black') + 
+  scale_y_continuous(breaks = c(), labels = c()) +
+  coord_polar('y') +
+  labs(title = 'Number of coding vs. non-coding variants', y = '', x = '') +
+  theme_minimal(base_size = 14) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.border = element_blank(),
+        panel.grid = element_blank(),
+        axis.ticks = element_blank(),
+        rect = element_rect(fill = 'transparent')
+  )
+  #ggsave(filename = 'pie_plot_context_noncoding.png', width = 8, height = 8, bg = 'transparent')
+```
+
+
+### Extracting ancestries
+
+#### Overview of which populations were included:
+```{r eval = F}
+removeWords = paste0('\\b(', paste0(c('case', 'cases', 'control', 'ancestry', 'of', 'individuals', 'founder', 'up', 'to', 'controls'), collapse = '|'), ')\\b')
+
+gwas_raw %>% 
+  dplyr::select(`INITIAL SAMPLE SIZE`, SNPS) %>% 
+  mutate(ancestries = gsub(x = `INITIAL SAMPLE SIZE`, pattern = '[[:digit:]]', replacement = '', fixed = F)) %>% 
+  mutate(ancestries = gsub(x = ancestries, pattern = '[[:punct:]]', replacement = '', fixed = F)) %>% 
+  mutate(ancestries = gsub(x = ancestries, pattern = removeWords, replacement = '')) %>% 
+  group_by(ancestries) %>% 
+  tally() %>% 
+  arrange(-n)
+# manually make a list of populations
+```
+
+#### Set ancestry based on regular expression search.
+```{r}
+okPops = paste0('\\b(', paste0(c('European', 'Ashkenazi', 'Hispanic', 'Japanese', 'Han', 'African', 'Korean', 'Israeli', 'Chinese', 'Finnish', 'Amish'), collapse = '|'), ')\\b')
+gwas_anc = gwas_raw %>% 
+  mutate(hasAncestry = grepl(pattern = okPops, x = `INITIAL SAMPLE SIZE`)) %>% 
+  dplyr::filter(hasAncestry) %>% 
+  mutate(ancestry = str_extract(`INITIAL SAMPLE SIZE`, pattern = okPops))
+```
+
+How many SNPs are unique in the whole dataset vs the ancestry-filtered dataset?
+```{r}
+length(unique(gwas_raw$SNPS))
+length(unique(gwas_anc$SNPS))
+length(unique(gwas_raw$SNPS)) - length(unique(gwas_anc$SNPS))
+```
+We will lose some informative SNPs if we account for ancestry in the LD block calculation. Missing values can be replaced with Europan ancestry.
+
+```{r}
+gwas_noAnc = gwas_raw %>% 
+  mutate(hasAncestry = grepl(pattern = okPops, x = `INITIAL SAMPLE SIZE`)) %>% 
+  dplyr::filter(!hasAncestry)
+```
+
+
+```{r}
+gwas_anc %>% group_by(ancestry) %>% tally() %>% arrange(-n)
+gwas_anc %>% group_by(ancestry) %>% tally() %>% 
+  mutate(group = case_when(ancestry %in% c('European', 'Finnish', 'Hispanic', 'Ashkenazi', 'Israeli', 'Amish') ~ 'CEU',
+                           ancestry %in% c('Han', 'Chinese', 'Japanese', 'Korean') ~ 'EAS', 
+                           ancestry %in% 'African' ~ 'AFR')) %>% 
+  ggplot(aes(x = reorder(ancestry, n), y = n, fill= group)) +
+  geom_col(color = 'black') +
+  coord_flip() +
+  geom_text(aes(label = n), position = position_dodge(width = 1), hjust = -0.5) +
+  scale_y_sqrt(limits = c(0, 3000)) +
+  labs(title = '', x = 'Population', y = 'n', fill = 'Super population')
+```
+
+### Expanding human SNPs with LD interval
+
+** EVAL FALSE**
+```{r eval = F}
+# data = gwas_noAnc %>% 
+#   dplyr::filter(grepl('rs', SNPS)) %>% 
+#   dplyr::filter(!grepl(';', SNPS))
+#dplyr::slice(3000:3036)
+gwas_anc %>% 
+  dplyr::filter(!SNPS %in% haplo$SNPS) %>% 
+  group_by(ancestry) %>% 
+  tally()
+
+data = gwas_anc %>% 
+  dplyr::filter(!SNPS %in% haplo$SNPS) %>% 
+  dplyr::filter(ancestry == 'European' | ancestry == 'Finnish') %>% 
+  dplyr::filter(grepl('rs', SNPS) | grepl('chr', SNPS)) %>% 
+  dplyr::filter(!grepl(';', SNPS))
+
+```
+
+Temporary copy to clipboard:
+```{r eval = F}
+data = data$SNPS
+clip <- pipe("pbcopy", "w")                       
+write.table(data, file=clip, quote = F, row.names = F)                               
+close(clip)
+rm(data, clip)
+```
+** / EVAL FALSE **
+
+We found LD intervals with the rAggr tool using an r^2 cutoff of 0.8. Respective population panels are given in the filename. Database used was 1000 Genomes Pilot Phase 3 hg19. Options were as follows: Max distance 500kb, min r^2 0.8, min MAF 0.1%.  
+
+```{r}
+files = list.files('data/hapmaps/', pattern = 'GWAS', full.names = T)
+haplogp = map(files, read.csv)
+haplogp = do.call(rbind, haplogp)
+haplo_sizes = haplogp %>% 
+  group_by(SNP1.Name) %>% 
+  tally() %>% 
+  unique() %>% 
+  filter(n >1)
+```
+
+<!-- ### Change of approach -->
+<!-- ```{r} -->
+<!-- test.hg19 = haplogp %>%  -->
+<!--   mutate(SNP1 = str_extract(SNP1.Name, pattern = '[^:]*')) %>%  -->
+<!--   mutate(SNP2 = str_extract(SNP2.Name, pattern = '[^:]*')) %>%  -->
+<!--   dplyr::select(-SNP1.Name, -SNP2.Name, -SNP2.Chr) %>%  -->
+<!--   dplyr::mutate(seqnames = paste0('chr', SNP1.Chr)) %>%  -->
+<!--   makeGRangesFromDataFrame(., start.field = 'SNP1.Pos', end.field = 'SNP1.Pos', keep.extra.columns = T) -->
+<!-- chain = import.chain('data/hg19ToMm10.over.chain') -->
+<!-- test.mm10 = unlist(liftOver(test.hg19, chain)) -->
+
+<!-- test2 = test.mm10[!duplicated(test.mm10)] -->
+<!-- findOverlaps(test2, unlist(regelements)) -->
+
+<!-- length(test.hg19) -->
+<!-- length(test.mm10) -->
+<!-- ``` -->
+
+<!-- Large length mismatch -- try extracting conserved regions first and then lifting over that region instead of taking just one bp. -->
+<!-- ```{r} -->
+<!-- test.hg19 = haplogp %>%  -->
+<!--   mutate(SNP1 = str_extract(SNP1.Name, pattern = '[^:]*')) %>%  -->
+<!--   mutate(SNP2 = str_extract(SNP2.Name, pattern = '[^:]*')) %>%  -->
+<!--   dplyr::select(-SNP1.Name, -SNP2.Name, -SNP2.Chr) %>%  -->
+<!--   dplyr::mutate(seqnames = paste0('chr', SNP1.Chr)) %>%  -->
+<!--   makeGRangesFromDataFrame(., start.field = 'SNP2.Pos', end.field = 'SNP2.Pos', keep.extra.columns = T) -->
+<!-- start(test.hg19) = start(test.hg19) -4 -->
+<!-- end(test.hg19) = end(test.hg19) +4 -->
+
+<!-- library(phastCons100way.UCSC.hg19) -->
+<!-- test.cons = scores(phastCons100way.UCSC.hg19, test.hg19) -->
+<!-- qplot(mcols(test.cons)$scores) -->
+<!-- ``` -->
+
+```{r}
+haplog = haplogp %>% 
+  group_by(SNP1.Name) %>% 
+  summarize(min_ld1 = min(SNP1.Pos), max_ld1 = max(SNP1.Pos), min_ld2 = min(SNP2.Pos), max_ld2 = max(SNP2.Pos), 
+            min_r2 = min(R.squared), min_dpr = min(D.), chr = SNP1.Chr[1], ancestry = Population[1]) 
+```
+
+Some LD intervals do not start with SNP1 but enclose SNP1 - resulting in pseudo-negative widths (This was the mistake made in earlier versions of this script.)
+
+In what cases is SNP1 (the GWAS "reference SNP") the starting point of the LD interval?
+```{r}
+haplog %>% dplyr::filter(min_ld1 == min_ld2)
+```
+
+Is SNP1 the reference (starting) SNP for all LDs?
+```{r}
+all(haplog$min_ld1 == haplog$max_ld1) 
+```
+
+Are all widths positive?
+```{r}
+all(haplog$max_ld2 >= haplog$min_ld1)
+```
+
+How many SNPs did not result in an LD interval but are single bps?
+```{r}
+table(haplog$min_ld1 == haplog$max_ld2)
+```
+
+Extract LD intervals from this table:
+```{r}
+haplo = haplog %>% 
+  #dplyr::filter(min_ld1 != min_ld2) %>% 
+  dplyr::mutate(start_ld = case_when(
+    min_ld2 > min_ld1 ~ min_ld1,
+    min_ld2 < min_ld1 ~ min_ld2,
+    min_ld2 == min_ld1 ~ min_ld1
+  ),
+  end_ld = max_ld2) %>% 
+  mutate(width = end_ld - start_ld) %>% 
+  mutate(SNPS = str_extract(SNP1.Name, pattern = '[^:]*')) 
+summary(haplo$width)
+```
+
+Some SNPs do not have an interval:
+```{r}
+haplo %>% dplyr::filter(start_ld == end_ld)
+# test = haplo %>% dplyr::filter(width == 0)
+# testpops = inner_join(test, gwas_raw, by = 'SNPS')
+# haplopos = inner_join(haplo, gwas_raw, by = 'SNPS')
+```
+
+#### Width distribution
+How big are the LD blocks?
+```{r}
+qplot(haplo$width, bins = 50) + scale_x_sqrt(breaks = c(2500, 25000, 1e5, 2e5, 5e5))
+```
+
+We could force the SNPs for which an LD interval was not found to the median distribution. For those, the average LD width is about 25k. A paper reporting the average GWAS resolution based on imputation and WGS claims that 80% of all causal variants are within 33.5 kbp of the lead SNP: <https://genomebiology.biomedcentral.com/articles/10.1186/s13059-017-1216-0>  
+
+#### Fixing LD blocks for NAs
+
+Determine LD intervals with width = 0 and extend these by a fixed value.
+```{r}
+haplomiss = haplo %>% 
+  dplyr::filter(width == 0) %>% 
+  dplyr::mutate(start_ld = min_ld1 - 17000, end_ld = min_ld1 + 17000) %>% 
+  mutate(width = end_ld - start_ld)
+```
+
+Merge both tables and retain only unique values.
+```{r}
+haplores = haplo %>%
+  bind_rows(haplo, haplomiss) %>% 
+  dplyr::filter(width != 0) %>% 
+  unique()
+length(haplores$SNPS)
+length(unique(haplores$SNPS))
+```
+
+<!-- ```{r} -->
+<!-- test = haplores %>%  -->
+<!--   group_by(SNPS) %>%  -->
+<!--   dplyr::filter(n()>1) -->
+<!-- ``` -->
+
+Now check the width again:
+```{r}
+qplot(haplores$width, bins = 50) + scale_x_sqrt(breaks = c(2500, 25000, 1e5, 2e5, 5e5))
+median(haplores$width)
+library(scales)
+haplores %>% 
+  ggplot(aes(x = width)) +
+  geom_density(fill = 'red', alpha = .5) +
+  geom_vline(aes(xintercept = median(width)), linetype = 'dashed') +
+  geom_text(aes(x = 200000, y = 1e-5, label = 'median = 34,000 bp')) +
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous() +
+  labs(title = '', y = 'Kernel density', x = 'LD block width [bp]')
+```
+
+
+## Overlay mouse REs and human GWAS loci
+
+### Lifting over hg19 to mm10
+```{r}
+gwas_anc = gwas_anc %>% 
+  dplyr::filter(SNPS %in% haplores$SNPS) %>% 
+  left_join(., haplores, by = 'SNPS') %>% 
+  unique()
+
+#gwas_anc %>% dplyr::filter(`REPORTED GENE(S)` == 'LUZP2')
+
+chain = import.chain('data/hg19ToMm10.over.chain')
+gwas_mm10 = gwas_anc %>% 
+  dplyr::select(PUBMEDID, `DISEASE/TRAIT`, CHR_ID, start_ld, end_ld, min_r2, min_dpr, SNPS, CONTEXT, `P-VALUE`) %>% 
+  dplyr::filter(!is.na(CHR_ID)) %>% 
+  dplyr::mutate(CHR_ID = paste0('chr', CHR_ID)) %>% 
+  dplyr::filter(!grepl(';', CHR_ID)) %>% 
+  dplyr::mutate(name = `DISEASE/TRAIT`) %>% 
+  dplyr::mutate(name = gsub(x = name, pattern = ' ', replacement = '_')) %>% 
+  dplyr::mutate(score = `P-VALUE`) %>% 
+  dplyr::select(-`DISEASE/TRAIT`, -`P-VALUE`) %>% 
+  unique() %>% 
+  makeGRangesFromDataFrame(., seqnames.field = 'CHR_ID', start.field = 'start_ld', end.field = 'end_ld', keep.extra.columns = T) %>% 
+  liftOver(., chain)
+# delete empty elements (no mouse equivalent)
+table(elementNROWS(gwas_mm10) == 0)
+gwas_mm10 = gwas_mm10[!elementNROWS(gwas_mm10) == 0]
+```
+
+Out of `r dim(gwas_anc)[1]` human GWAS loci, `r length(gwas_mm10)`, or `r length(gwas_mm10) / dim(gwas_anc)[1] * 100`% have a mouse equivalent.  
+
+## Adding more genes
+Certain genes have also been described to be differentially expressed in AD vs controls. We want to add possible regulatory elements for these genes to see how they are modulated in a disease situation. 
+
+### APP NL-G-F
+
+From this publication: <https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5736730/>
+```{r}
+genexpr = readxl::read_xlsx('data/gene_expression_APP-NL-G-F/41598_2017_17999_MOESM7_ESM.xlsx', skip = 1)
+genexpr.gr = AnnotationDbi::select(mogene20sttranscriptcluster.db, keys = as.character(genexpr$`Affymetrix ID`), columns = c('CHR', 'CHRLOC', 'CHRLOCEND')) %>% 
+  mutate(chromosome = paste0('chr', CHR), start = abs(CHRLOC), end = abs(CHRLOCEND), strand = ifelse(CHRLOC<0, '-', '+')) %>% 
+  na.omit() %>% 
+  makeGRangesFromDataFrame(., seqnames.field = 'chromosome', start.field = 'start', end.field = 'end')
+genexpr_prom = promoters(genexpr.gr, upstream = 2000)
+genexpr = c(genexpr.gr, genexpr_prom)
+```
+
+### CK-p25
+
+From Manolis Kellis Nature 2015 paper.
+```{r}
+files = readxl::read_excel('data/gene_expression_CKp25/filteredChanges_FDR005_foldChangeAboveAverage_FLS.xlsx') %>% arrange(`pCK-p25 All`) %>% top_n(250, wt = -`pCK-p25 All`)
+library(TxDb.Mmusculus.UCSC.mm10.ensGene)
+ckp25.gr = select(TxDb.Mmusculus.UCSC.mm10.ensGene, keys = files$`Ensembl ID`, columns = c('TXNAME', 'TXCHROM', 'TXSTART', 'TXEND'), keytype = 'GENEID') %>% dplyr::group_by(GENEID) %>% summarize(start = min(TXSTART), end = max(TXEND), seqnames = TXCHROM[1]) %>% na.omit() %>% makeGRangesFromDataFrame(.)
+```
+
+### Manual addition
+Manually adding interesting gene regions based on literature search. All coordinates are **mm10**.  
+
+- *App* coordinates: chr16:84,934,252-85,235,670  
+- *Mapt* coordinates: chr11:104,213,728-104,333,970  
+- *Snca* (already in the panel, extending to promoter: chr6:60,819,536-60,842,627  
+- *Brca1* <https://www.ncbi.nlm.nih.gov/pubmed/29042514>: chr11:101,539,775-101,566,684  
+- *Bdnf*: chr2:109,604,220-109,743,192  
+- *Clu*: chr14:65,959,760-65,980,669  
+
+```{r}
+app.gr = GRanges(seqnames = 'chr16', ranges = IRanges(84934300, 85235670))
+mapt.gr = GRanges(seqnames = 'chr11', ranges = IRanges(104213800, 104333970))
+snca.gr = GRanges(seqnames = 'chr6', ranges = IRanges(60819500, 60842600))
+brca1.gr = GRanges(seqnames = 'chr11', ranges = IRanges(101539800, 101566650))
+bdnf.gr = GRanges(seqnames = 'chr2', ranges = IRanges(109604220, 109743190))
+clu.gr = GRanges(seqnames = 'chr14', ranges = IRanges(65959760, 65980670))
+psen1 = GRanges(seqnames = 'chr12', ranges = IRanges(83674598, 83737947))
+psen2 = GRanges(seqnames = 'chr1', ranges = IRanges(180213360, 180273694))
+bace1 = GRanges(seqnames = 'chr9', ranges = IRanges(45823398, 45873979))
+ncstn = GRanges(seqnames = 'chr1', ranges = IRanges(172062382, 172085833))
+aph1a = GRanges(seqnames = 'chr3', ranges = IRanges(95869495, 95911636))
+cd147 = GRanges(seqnames = 'chr10', ranges = IRanges(79693536, 79717967))
+bace2 = GRanges(seqnames = 'chr16', ranges = IRanges(97350608, 97490082))
+genexpr = c(genexpr, ckp25.gr, app.gr, mapt.gr, snca.gr, brca1.gr, bdnf.gr, clu.gr, psen1, psen2, bace1, ncstn, aph1a, cd147, bace2)
+```
+
+# Results
+
+Final number of human GWAS association loci translated to mouse: `r length(gwas_mm10)`  
+Final number of mouse REs: `r length(bed)`  
+Final number of mouse REs per cell type: 
+```{r}
+sapply(split(bed, bed@elementMetadata$origin), length)
+```
+
+
+## GWAS overlapping REs
+Make an informal data frame containing the all overlaps between REs and GWAS hits - *note that this will contain duplicated IDs, as multiple cell type-specific REs can overlap multiple GWAS hits*.  
+```{r}
+gwas = unlist(gwas_mm10)
+#gwas = gwas_mm10_fixed
+ov = IRanges::findOverlaps(bed, gwas)
+regsOfInterest = data.frame(
+  chromosome = seqnames(bed[queryHits(ov)]),
+  RE_start = start(bed[queryHits(ov)]),
+  RE_end = end(bed[queryHits(ov)]),
+  GWAS_start = start(gwas[subjectHits(ov)]),
+  GWAS_end = end(gwas[subjectHits(ov)]),
+  RE_origin = mcols(bed[queryHits(ov)])$origin,
+  closest_gene = mcols(bed[queryHits(ov)])$closestGene,
+  closest_gene_distance = mcols(bed[queryHits(ov)])$distanceToClosest,
+  GWAS_trait = mcols(gwas[subjectHits(ov)])$name,
+  GWAS_SNP = mcols(gwas[subjectHits(ov)])$SNPS,
+  GWAS_context = mcols(gwas[subjectHits(ov)])$CONTEXT,
+  GWAS_pval = mcols(gwas[subjectHits(ov)])$score,
+  GWAS_PMID = mcols(gwas[subjectHits(ov)])$PUBMEDID
+) %>% 
+  dplyr::mutate(RE_width = RE_end - RE_start)
+```
+
+How many gene symbols that were reported to be mapped in GWAS studies actually overlap mouse genes?
+```{r}
+gwas_raw_mapped = gwas_raw$MAPPED_GENE %>% str_split(., ' - ') %>% unlist(.) %>% str_split(., ', ') %>% unlist(.)
+gwas_ann = annotateREs(gwas)
+gwas_ann@elementMetadata$closestGene = toupper(gwas_ann@elementMetadata$closestGene)
+length(unique(gwas_raw_mapped))
+length(unique(gwas_ann$closestGene))
+table(unique(gwas_ann$closestGene) %in% unique(gwas_raw_mapped))
+```
+
+
+
+Make the GWAS data frame more unique for downstream analysis and bait ordering, as some REs are duplicated due to overlap with multiple GWAS_loci.
+
+```{r}
+mergeOverlapping = function(gr) {
+  #gr = unlist(gwas_mm10)
+  toMerge = as.tibble(gr) %>% dplyr::select(seqnames, start, end)
+  #joined = genome_inner_join_closest(toMerge, toMerge) %>% dplyr::select(seqnames = seqnames.x, start = start.x, end = end.x) %>% unique() %>% makeGRangesFromDataFrame(.)
+  joined = toMerge %>% 
+    group_by(seqnames) %>% 
+    arrange(start) %>% 
+    ungroup() %>% 
+    genome_cluster(., by = c('seqnames', 'start', 'end'), max_distance = 80) %>% 
+    group_by(cluster_id) %>% 
+    summarize(seqnames = seqnames[1], start = min(start), end = max(end)) %>% 
+    unique() %>% 
+    makeGRangesFromDataFrame(.)
+  return(joined)
+}
+gwasMerged = mergeOverlapping(unlist(gwas_mm10))
+qplot(width(gwasMerged), geom = 'density', fill = TRUE) +
+  scale_x_continuous(limits = c(0, 5000)) +
+  guides(fill = F) +
+  #scale_y_continuous(labels = scales::comma) +
+  labs(x = 'basepairs', y = 'Kernel density', title = bquote('Width distribution of GWAS loci in high LD ('* ~r^2 * ' > 0.8)')) +
+  theme_minimal(base_size = 13) +
+  ggsave(filename = 'GWAS_width_distribution.png', bg = 'transparent', width = 6, height = 3)
+  
+```
+
+```{r}
+bedMerged = mergeOverlapping(bed)
+
+summary(width(unlist(gwas_mm10)))
+summary(width(gwasMerged))
+
+summary(width(gwasMerged))
+
+export.bed(unlist(gwas_mm10), 'export/gwas_UNmerged_regions_mm10.bed')
+export.bed(gwasMerged, 'export/gwas_merged_regions_mm10.bed')
+export.bed(genexpr, 'export/genexpr_merged_regions_mm10.bed')
+```
+## Merge GWAS and gene expression data
+```{r}
+# add the gene expression ranges to the gwasMerged object
+bigRegions = c(gwasMerged, genexpr)
+strand(bigRegions) = '*'
+regsIntersection = intersect(bigRegions, bedMerged)
+export.bed(regsIntersection, 'export/REs_of_interest_mm10.bed')
+```
+
+## Plot intersection of REs and GWAS / gene expr. data
+```{r}
+qplot(width(regsIntersection), bins = 100) + labs(title = 'Width of mouse REs overlapping human GWAS loci', y = 'n',  x = 'bp')
+```
+
+<!-- Conservation: -->
+<!-- ```{r} -->
+<!-- cons = import.bw('data/mm10.60way.phastCons60wayEuarchontoGlire.bw', selection = BigWigSelection(ranges = regsIntersection, colnames = 'score')) -->
+<!-- consregs = as.data.frame(cons[cons$score > 0.1]) %>%  -->
+<!--   genome_cluster(., by = c('seqnames', 'start', 'end'), max_distance = 10) %>%  -->
+<!--   group_by(cluster_id) %>%  -->
+<!--   summarize(seqnames = seqnames[1], start = min(start), end = max(end), strand = '*', width = end-start, mean_score = mean(score, na.rm = T)) %>%  -->
+<!--   makeGRangesFromDataFrame(., keep.extra.columns = T) -->
+
+<!-- qplot(as.data.frame(consregs)$width) + scale_x_sqrt() -->
+<!-- consregs = consregs[width(consregs)>10] -->
+<!-- export.bed(consregs, 'conserved_RE_clusters_GWAS_genexpr_overlay_mm10.bed') -->
+<!-- ``` -->
+
+
+
+```{r echo = F}
+### clean up variables
+rm(list = c('app.gr', 'bdnf.gr', 'brca1.gr', 'chain', 'ckp25.gr', 'clu.gr', 'files', 'files.gr', 'genexpr_prom', 'genexpr', 'genexpr.gr', 'gwas_anc', 'gwas_ann', 'gwas_noAnc', 'gwas_raw', 'haplo', 'haplo_sizes', 'haplog', 'haplomiss', 'mapt.gr', 'ov', 'snca.gr', 'gwas_raw_mapped', 'okPops', 'bace1', 'bace2', 'psen1', 'psen2', 'cd147', 'aph1a', 'ncstn'))
+save.image(file = 'find_loci_corrected.Rdata')
+```
+
